@@ -14,12 +14,14 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
 const (
 	defaultBinaryPath = "/usr/local/bin/ntfy"
 	defaultCommand    = "serve"
 	defaultSecretsDir = "/run/secrets"
+	defaultWaitDelay  = 5 * time.Second
 	secretPrefix      = "ntfy_"
 )
 
@@ -48,13 +50,24 @@ func defaultReadDir(dirname string) ([]fs.DirEntry, error) {
 	return entries, nil
 }
 
+func cancelCommand(cmd *exec.Cmd) func() error {
+	return func() error {
+		if cmd.Process != nil {
+			return cmd.Process.Signal(syscall.SIGTERM)
+		}
+		return nil
+	}
+}
+
 func defaultCreateCommand(ctx context.Context, args []string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, defaultBinaryPath)
 	if len(args) == 0 {
 		cmd.Args = []string{defaultBinaryPath, defaultCommand}
-		return cmd
+	} else {
+		cmd.Args = append([]string{defaultBinaryPath}, args...)
 	}
-	cmd.Args = append([]string{defaultBinaryPath}, args...)
+	cmd.Cancel = cancelCommand(cmd)
+	cmd.WaitDelay = defaultWaitDelay
 	return cmd
 }
 
@@ -149,6 +162,22 @@ func BuildCommandArguments(defaultCmd string, args []string) []string {
 	return res
 }
 
+// IsTermination determines whether a command termination was initiated by
+// intentional orchestration shutdown signals to prevent benign shutdowns
+// from being misclassified as container runtime failures.
+func IsTermination(ctx context.Context, err error) bool {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return true
+	}
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		if status, statusOk := exitErr.Sys().(syscall.WaitStatus); statusOk && status.Signaled() {
+			sig := status.Signal()
+			return sig == syscall.SIGTERM || sig == syscall.SIGINT || sig == syscall.SIGKILL
+		}
+	}
+	return false
+}
+
 // ExitCode extracts the process exit code from an execution error to ensure
 // container health checks and parent process status monitors receive accurate termination signals.
 func ExitCode(err error) int {
@@ -156,6 +185,13 @@ func ExitCode(err error) int {
 		return 0
 	}
 	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		if status, statusOk := exitErr.Sys().(syscall.WaitStatus); statusOk && status.Signaled() {
+			sig := status.Signal()
+			if sig == syscall.SIGTERM || sig == syscall.SIGINT {
+				return 0
+			}
+			return 128 + int(sig)
+		}
 		return exitErr.ExitCode()
 	}
 	return 1
@@ -187,10 +223,13 @@ func main() {
 	defer stop()
 
 	if err := Run(ctx, args, defaultSecretsDir); err != nil {
-		code := ExitCode(err)
-		if code != 0 {
+		if !IsTermination(ctx, err) {
 			fmt.Fprintf(os.Stderr, "init error: %v\n", err)
 		}
-		exitFunc(code)
+		if IsTermination(ctx, err) {
+			exitFunc(0)
+			return
+		}
+		exitFunc(ExitCode(err))
 	}
 }

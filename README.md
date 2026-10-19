@@ -120,6 +120,7 @@ Adjust the server parameters:
 * `APP_UID` and `APP_GID` matching the numeric UID/GID of your dedicated host `ntfy` account.
 * `NTFY_BEHIND_PROXY='true'` to extract real client IPs from proxy headers.
 * `NTFY_WEB_ROOT`: keep as `'disable'` for headless / Zero-Trust API deployments, or comment out if enabling the Web UI under an unguessable subpath via Docker Secrets.
+* `NTFY_UPSTREAM_BASE_URL`: uncomment and set to `'https://ntfy.sh'` if using the official iOS app (required for Apple APNs push relay; not needed for Android or desktop).
 * SQLite cache, auth paths, PRAGMA queries, and attachment size limits.
 
 ### 5. Configure Secrets
@@ -201,7 +202,8 @@ Keep deployment inputs and service configuration outside the service account's w
 | `docker-compose.yaml`, `.env` | `root:root` | `0600` | Host-only manifests and environment settings |
 | `secrets/` directory | `root:ntfy` | `0750` | Traverse-only access for the service group |
 | `secrets/*` | `root:ntfy` | `0440` | Read-only to the service group |
-| `data/` | `ntfy:ntfy` | `0700` | Private writable runtime storage for SQLite databases and attachments |
+| `data/` and subdirectories | `ntfy:ntfy` | `0700` | Private runtime storage and nested directories |
+| `data/*` files | `ntfy:ntfy` | `0600` | Private read-write storage for SQLite databases and attachments |
 
 #### Apply or restore host permissions
 
@@ -219,7 +221,8 @@ sudo find /home/ntfy/secrets -type d -exec chmod 0750 {} +
 sudo find /home/ntfy/secrets -type f -exec chmod 0440 {} +
 
 sudo chown -R ntfy:ntfy /home/ntfy/data
-sudo chmod 0700 /home/ntfy/data
+sudo find /home/ntfy/data -type d -exec chmod 0700 {} +
+sudo find /home/ntfy/data -type f -exec chmod 0600 {} +
 ```
 
 ### 7. Configure Edge Reverse Proxy (Angie)
@@ -295,22 +298,22 @@ Since `ntfy` is configured with `NTFY_AUTH_DEFAULT_ACCESS="deny-all"`, topics ar
 
 ### 1. Add Administrator or Standard User
 
-Management commands can be executed via `run --rm` (universal; works whether the daemon is running or stopped during initial setup) or via `exec` on a running container.
-
 Create a dedicated administrator account:
 
 ```bash
-# Ephemeral execution (recommended for initial setup or offline maintenance):
-sudo docker compose -f /home/ntfy/docker-compose.yaml run --rm ntfy user add --role=admin <ADMIN_USERNAME>
-
-# Or inside an actively running container:
-sudo docker compose -f /home/ntfy/docker-compose.yaml exec ntfy /usr/local/bin/ntfy user add --role=admin <ADMIN_USERNAME>
+sudo docker compose -f /home/ntfy/docker-compose.yaml exec ntfy ntfy user add --role=admin <ADMIN_USERNAME>
 ```
 
 Create a standard user account:
 
 ```bash
-sudo docker compose -f /home/ntfy/docker-compose.yaml run --rm ntfy user add <USERNAME>
+sudo docker compose -f /home/ntfy/docker-compose.yaml exec ntfy ntfy user add <USERNAME>
+```
+
+List all registered users and roles:
+
+```bash
+sudo docker compose -f /home/ntfy/docker-compose.yaml exec ntfy ntfy user list
 ```
 
 ### 2. Grant Topic Access
@@ -318,13 +321,19 @@ sudo docker compose -f /home/ntfy/docker-compose.yaml run --rm ntfy user add <US
 Grant read-write access to a specific topic:
 
 ```bash
-sudo docker compose -f /home/ntfy/docker-compose.yaml run --rm ntfy access <USERNAME> "alerts" rw
+sudo docker compose -f /home/ntfy/docker-compose.yaml exec ntfy ntfy access <USERNAME> "alerts" rw
 ```
 
 Grant read-only access:
 
 ```bash
-sudo docker compose -f /home/ntfy/docker-compose.yaml run --rm ntfy access <USERNAME> "alerts" ro
+sudo docker compose -f /home/ntfy/docker-compose.yaml exec ntfy ntfy access <USERNAME> "alerts" ro
+```
+
+List all granted topic permissions:
+
+```bash
+sudo docker compose -f /home/ntfy/docker-compose.yaml exec ntfy ntfy access
 ```
 
 ### 3. Generate Access Tokens
@@ -332,13 +341,13 @@ sudo docker compose -f /home/ntfy/docker-compose.yaml run --rm ntfy access <USER
 Generate an access token for API publishing and automation:
 
 ```bash
-sudo docker compose -f /home/ntfy/docker-compose.yaml run --rm ntfy token add <ADMIN_USERNAME>
+sudo docker compose -f /home/ntfy/docker-compose.yaml exec ntfy ntfy token add <ADMIN_USERNAME>
 ```
 
 List existing tokens:
 
 ```bash
-sudo docker compose -f /home/ntfy/docker-compose.yaml run --rm ntfy token list
+sudo docker compose -f /home/ntfy/docker-compose.yaml exec ntfy ntfy token list
 ```
 
 </details>
