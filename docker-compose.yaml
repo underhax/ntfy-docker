@@ -1,0 +1,66 @@
+name: ntfy
+
+services:
+  ntfy:
+    image: ghcr.io/underhax/ntfy-docker:${NTFY_VERSION:-latest}
+    container_name: ntfy
+    restart: always
+    user: "${APP_UID}:${APP_GID}"
+    read_only: true
+    ipc: none
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add: []
+    env_file:
+      - .env
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+          pids: 50
+    mem_reservation: 64M
+    tmpfs:
+      - /tmp:mode=1777,noexec,nosuid,nodev,size=64m
+    volumes:
+      - ./data:/data:rw,noexec,nosuid,nodev
+      - /etc/localtime:/etc/localtime:ro
+    secrets:
+      - ntfy_base_url
+      # Optional Web UI secret subpath:
+      # - ntfy_web_root
+      # Optional Web Push (RFC 8030 browser notifications when web app is closed):
+      # - ntfy_web_push_public_key
+      # - ntfy_web_push_private_key
+      # - ntfy_web_push_email_address
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/probe"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - frontend_gateway
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+secrets:
+  ntfy_base_url:
+    file: ./secrets/ntfy_base_url
+  # ntfy_web_root:
+  #   file: ./secrets/ntfy_web_root
+  # ntfy_web_push_public_key:
+  #   file: ./secrets/ntfy_web_push_public_key
+  # ntfy_web_push_private_key:
+  #   file: ./secrets/ntfy_web_push_private_key
+  # ntfy_web_push_email_address:
+  #   file: ./secrets/ntfy_web_push_email_address
+
+networks:
+  frontend_gateway:
+    external: true

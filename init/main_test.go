@@ -1,0 +1,510 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"slices"
+	"testing"
+)
+
+func mockFailingReadDir(_ string) ([]fs.DirEntry, error) {
+	return nil, errMockReadDir
+}
+
+func mockFailingReadFile(_ string) ([]byte, error) {
+	return nil, errMockReadFile
+}
+
+func mockSuccessfulExec(_ context.Context, _, _ []string) error {
+	return nil
+}
+
+func mockFailingExec(_ context.Context, _, _ []string) error {
+	return errMockExec
+}
+
+func mockSuccessfulCommand(ctx context.Context, _ []string) *exec.Cmd {
+	return exec.CommandContext(ctx, "true")
+}
+
+var recordedExitCode = -1
+
+func mockExitRecorder(code int) {
+	recordedExitCode = code
+}
+
+func TestDefaultReadFile(t *testing.T) {
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "sample.txt")
+	expectedContent := []byte("secret_value")
+
+	if err := os.WriteFile(filePath, expectedContent, 0o600); err != nil {
+		t.Fatalf("writing test file: %v", err)
+	}
+
+	data, err := defaultReadFile(filePath)
+	if err != nil {
+		t.Fatalf("defaultReadFile() unexpected error: %v", err)
+	}
+
+	if !bytes.Equal(data, expectedContent) {
+		t.Errorf("defaultReadFile() = %q, want %q", data, expectedContent)
+	}
+
+	if _, err := defaultReadFile(filepath.Join(tempDir, "nonexistent.txt")); err == nil {
+		t.Error("defaultReadFile() expected error on nonexistent file, got nil")
+	}
+}
+
+func TestDefaultReadDir(t *testing.T) {
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "entry.txt")
+	if err := os.WriteFile(filePath, []byte("ok"), 0o600); err != nil {
+		t.Fatalf("writing entry file: %v", err)
+	}
+
+	entries, err := defaultReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("defaultReadDir() unexpected error: %v", err)
+	}
+
+	if len(entries) != 1 || entries[0].Name() != "entry.txt" {
+		t.Errorf("defaultReadDir() unexpected entries: %v", entries)
+	}
+
+	if _, err := defaultReadDir(filepath.Join(tempDir, "missing_subdir")); err == nil {
+		t.Error("defaultReadDir() expected error on nonexistent directory, got nil")
+	}
+}
+
+func TestDefaultCreateCommand(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name     string
+		args     []string
+		wantCmd  string
+		wantArgs []string
+	}{
+		{
+			name:     "empty args invokes default serve command",
+			args:     nil,
+			wantCmd:  defaultBinaryPath,
+			wantArgs: []string{defaultBinaryPath, defaultCommand},
+		},
+		{
+			name:     "subcommand args are passed directly",
+			args:     []string{"user", "add", "admin"},
+			wantCmd:  defaultBinaryPath,
+			wantArgs: []string{defaultBinaryPath, "user", "add", "admin"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := defaultCreateCommand(ctx, tt.args)
+			if cmd.Path != tt.wantCmd && !slices.Contains(cmd.Args, tt.wantCmd) {
+				t.Errorf("unexpected command path: %s", cmd.Path)
+			}
+			if !slices.Equal(cmd.Args, tt.wantArgs) {
+				t.Errorf("defaultCreateCommand() args = %v, want %v", cmd.Args, tt.wantArgs)
+			}
+		})
+	}
+}
+
+func TestDefaultExec(t *testing.T) {
+	origCreateCommand := createCommand
+	defer func() { createCommand = origCreateCommand }()
+
+	ctx := context.Background()
+
+	tests := []struct {
+		cmdFunc     func(context.Context, []string) *exec.Cmd
+		name        string
+		expectError bool
+	}{
+		{
+			name:        "successful execution",
+			cmdFunc:     mockSuccessfulCommand,
+			expectError: false,
+		},
+		{
+			name: "missing binary execution failure",
+			cmdFunc: func(ctx context.Context, _ []string) *exec.Cmd {
+				return exec.CommandContext(ctx, "/path/that/does/not/exist")
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			createCommand = tt.cmdFunc
+			err := defaultExec(ctx, []string{"test"}, []string{"FOO=BAR"})
+			if tt.expectError && err == nil {
+				t.Errorf("defaultExec() expected error, got nil")
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("defaultExec() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestPrepareEnvironment_Errors(t *testing.T) {
+	origReadDir := readDir
+	origReadFile := readFile
+	defer func() {
+		readDir = origReadDir
+		readFile = origReadFile
+	}()
+
+	tempDir := t.TempDir()
+
+	tests := []struct {
+		setup       func()
+		expectedErr error
+		name        string
+		targetDir   string
+	}{
+		{
+			expectedErr: errMockReadDir,
+			name:        "readDir error propagates",
+			setup: func() {
+				readDir = mockFailingReadDir
+			},
+			targetDir: tempDir,
+		},
+		{
+			expectedErr: nil,
+			name:        "missing directory returns base environment",
+			setup: func() {
+				readDir = origReadDir
+			},
+			targetDir: filepath.Join(tempDir, "absent_dir"),
+		},
+		{
+			expectedErr: errMockReadFile,
+			name:        "readFile error propagates",
+			setup: func() {
+				readDir = origReadDir
+				readFile = mockFailingReadFile
+				if err := os.WriteFile(filepath.Join(tempDir, "ntfy_token"), []byte("value"), 0o600); err != nil {
+					t.Fatalf("writing test secret file: %v", err)
+				}
+			},
+			targetDir: tempDir,
+		},
+		{
+			expectedErr: errInvalidSecretKey,
+			name:        "invalid secret key returns error",
+			setup: func() {
+				readDir = origReadDir
+				readFile = origReadFile
+				if err := os.WriteFile(filepath.Join(tempDir, "ntfy_bad=key"), []byte("val"), 0o600); err != nil {
+					t.Fatalf("writing test secret file: %v", err)
+				}
+			},
+			targetDir: tempDir,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.setup()
+			res, err := PrepareEnvironment([]string{"BASE=1"}, tt.targetDir)
+			if tt.expectedErr != nil {
+				if !errors.Is(err, tt.expectedErr) {
+					t.Fatalf("expected error %v, got %v", tt.expectedErr, err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if !slices.Contains(res, "BASE=1") {
+					t.Errorf("expected base env preserved, got %v", res)
+				}
+			}
+		})
+	}
+}
+
+func TestPrepareEnvironment_Scanning(t *testing.T) {
+	origReadDir := readDir
+	origReadFile := readFile
+	defer func() {
+		readDir = origReadDir
+		readFile = origReadFile
+	}()
+
+	readDir = defaultReadDir
+	readFile = defaultReadFile
+
+	tempDir := t.TempDir()
+
+	if err := os.Mkdir(filepath.Join(tempDir, "ntfy_directory"), 0o700); err != nil {
+		t.Fatalf("creating test subdir: %v", err)
+	}
+
+	files := []struct {
+		filename string
+		content  string
+	}{
+		{filename: "ignored_file.txt", content: "ignore"},
+		{filename: "ntfy_", content: "empty_key"},
+		{filename: "ntfy_empty_val", content: "   \n\t  "},
+		{filename: "ntfy_base_url", content: "https://ntfy.example.com\n"},
+		{filename: "ntfy_auth_default_access", content: "deny-all"},
+	}
+
+	for _, f := range files {
+		if err := os.WriteFile(filepath.Join(tempDir, f.filename), []byte(f.content), 0o600); err != nil {
+			t.Fatalf("creating test file %s: %v", f.filename, err)
+		}
+	}
+
+	baseEnv := []string{"INITIAL=VAL"}
+	res, err := PrepareEnvironment(baseEnv, tempDir)
+	if err != nil {
+		t.Fatalf("PrepareEnvironment() unexpected error: %v", err)
+	}
+
+	expectedMatches := []string{
+		"INITIAL=VAL",
+		"NTFY_BASE_URL=https://ntfy.example.com",
+		"NTFY_AUTH_DEFAULT_ACCESS=deny-all",
+	}
+
+	for _, match := range expectedMatches {
+		if !slices.Contains(res, match) {
+			t.Errorf("missing expected environment entry %q in %v", match, res)
+		}
+	}
+
+	unexpectedPrefixes := []string{
+		"NTFY_DIRECTORY",
+		"IGNORED_FILE",
+		"NTFY_EMPTY_VAL",
+		"NTFY_=",
+	}
+
+	for _, prefix := range unexpectedPrefixes {
+		for _, envEntry := range res {
+			if slices.Contains([]string{envEntry}, prefix) {
+				t.Errorf("unexpected environment entry found: %s", envEntry)
+			}
+		}
+	}
+}
+
+func TestBuildCommandArguments(t *testing.T) {
+	tests := []struct {
+		name       string
+		defaultCmd string
+		args       []string
+		want       []string
+	}{
+		{
+			name:       "empty input produces default daemon command invocation",
+			defaultCmd: defaultCommand,
+			args:       nil,
+			want:       []string{defaultCommand},
+		},
+		{
+			name:       "custom command arguments are returned as subcommands",
+			defaultCmd: defaultCommand,
+			args:       []string{"access", "alice", "alerts"},
+			want:       []string{"access", "alice", "alerts"},
+		},
+		{
+			name:       "explicit binary argument is stripped and returns subcommands",
+			defaultCmd: defaultCommand,
+			args:       []string{defaultBinaryPath, "token", "info"},
+			want:       []string{"token", "info"},
+		},
+		{
+			name:       "explicit binary argument alone falls back to default command",
+			defaultCmd: defaultCommand,
+			args:       []string{defaultBinaryPath},
+			want:       []string{defaultCommand},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := BuildCommandArguments(tt.defaultCmd, tt.args)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("BuildCommandArguments() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExitCode(t *testing.T) {
+	tests := []struct {
+		err      error
+		name     string
+		expected int
+	}{
+		{
+			err:      nil,
+			expected: 0,
+			name:     "nil error returns zero exit code",
+		},
+		{
+			err:      errors.New("generic failure"),
+			expected: 1,
+			name:     "generic error returns exit code one",
+		},
+		{
+			err: func() error {
+				cmd := exec.CommandContext(t.Context(), "sh", "-c", "exit 42")
+				return cmd.Run()
+			}(),
+			expected: 42,
+			name:     "exit error extracts subprocess status code",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ExitCode(tt.err); got != tt.expected {
+				t.Errorf("ExitCode(%v) = %d, want %d", tt.err, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestRun(t *testing.T) {
+	origReadDir := readDir
+	origReadFile := readFile
+	origExecProcess := execProcess
+	defer func() {
+		readDir = origReadDir
+		readFile = origReadFile
+		execProcess = origExecProcess
+	}()
+
+	tempDir := t.TempDir()
+	readDir = defaultReadDir
+	readFile = defaultReadFile
+
+	var capturedArgs []string
+	var capturedEnv []string
+
+	mockRecordingExec := func(_ context.Context, args, env []string) error {
+		capturedArgs = args
+		capturedEnv = env
+		return nil
+	}
+
+	tests := []struct {
+		execFunc    func(context.Context, []string, []string) error
+		readDirFunc func(string) ([]fs.DirEntry, error)
+		name        string
+		expectError bool
+	}{
+		{
+			name:        "successful execution passes arguments and environment",
+			execFunc:    mockRecordingExec,
+			readDirFunc: defaultReadDir,
+			expectError: false,
+		},
+		{
+			name:        "environment preparation error propagates failure",
+			execFunc:    mockRecordingExec,
+			readDirFunc: mockFailingReadDir,
+			expectError: true,
+		},
+		{
+			name:        "process execution failure propagates error",
+			execFunc:    mockFailingExec,
+			readDirFunc: defaultReadDir,
+			expectError: true,
+		},
+	}
+
+	runArgs := []string{"publish", "topic1", "hello"}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			execProcess = tt.execFunc
+			readDir = tt.readDirFunc
+
+			err := Run(context.Background(), runArgs, tempDir)
+			if tt.expectError && err == nil {
+				t.Fatalf("Run() expected error, got nil")
+			}
+			if !tt.expectError && err != nil {
+				t.Fatalf("Run() unexpected error: %v", err)
+			}
+			if !tt.expectError {
+				if !reflect.DeepEqual(capturedArgs, runArgs) {
+					t.Errorf("Run() args = %v, want %v", capturedArgs, runArgs)
+				}
+				if len(capturedEnv) == 0 {
+					t.Errorf("Run() expected non-empty environment")
+				}
+			}
+		})
+	}
+}
+
+func TestMain_Success(t *testing.T) {
+	origExecProcess := execProcess
+	origReadDir := readDir
+	origReadFile := readFile
+	origExitFunc := exitFunc
+	origArgs := os.Args
+	defer func() {
+		execProcess = origExecProcess
+		readDir = origReadDir
+		readFile = origReadFile
+		exitFunc = origExitFunc
+		os.Args = origArgs
+	}()
+
+	execProcess = mockSuccessfulExec
+	readDir = func(_ string) ([]fs.DirEntry, error) {
+		return nil, fs.ErrNotExist
+	}
+	recordedExitCode = -1
+	exitFunc = mockExitRecorder
+	os.Args = []string{"init", "serve"}
+
+	main()
+
+	if recordedExitCode != -1 {
+		t.Errorf("main() unexpected exit code: %d", recordedExitCode)
+	}
+}
+
+func TestMain_Failure(t *testing.T) {
+	origExecProcess := execProcess
+	origReadDir := readDir
+	origReadFile := readFile
+	origExitFunc := exitFunc
+	defer func() {
+		execProcess = origExecProcess
+		readDir = origReadDir
+		readFile = origReadFile
+		exitFunc = origExitFunc
+	}()
+
+	readDir = mockFailingReadDir
+	recordedExitCode = -1
+	exitFunc = mockExitRecorder
+
+	main()
+
+	if recordedExitCode != 1 {
+		t.Errorf("main() expected exit code 1 on failure, got %d", recordedExitCode)
+	}
+}
