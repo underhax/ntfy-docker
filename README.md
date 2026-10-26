@@ -1,7 +1,6 @@
 # Hardened Containerized Ntfy
 
 [![CI](https://github.com/underhax/ntfy-docker/actions/workflows/ci.yml/badge.svg)](https://github.com/underhax/ntfy-docker/actions/workflows/ci.yml)
-[![Build](https://github.com/underhax/ntfy-docker/actions/workflows/build.yml/badge.svg)](https://github.com/underhax/ntfy-docker/actions/workflows/build.yml)
 [![GitHub last commit](https://img.shields.io/github/last-commit/underhax/ntfy-docker)](https://github.com/underhax/ntfy-docker/commits/main)
 [![GitHub issues](https://img.shields.io/github/issues/underhax/ntfy-docker)](https://github.com/underhax/ntfy-docker/issues)
 [![GitHub repo size](https://img.shields.io/github/repo-size/underhax/ntfy-docker)](https://github.com/underhax/ntfy-docker)
