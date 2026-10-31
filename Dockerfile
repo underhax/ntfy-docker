@@ -1,6 +1,6 @@
-FROM binwiederhier/ntfy:v2.34.0@sha256:901e14503d3f605f445be0e68f2ac71f0aa73391897ce6ceb599f8c48d8b3792 AS donor
+FROM binwiederhier/ntfy:v2.35.0@sha256:6f0c9abab7b99a978d816611cc90dabb4849b81f60c53114e91cd07931085dc0 AS donor
 
-FROM golang:1.27.3-alpine3.24@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS go-builder
+FROM golang:1.27.3-alpine3.24@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS go-builder
 
 WORKDIR /build
 
