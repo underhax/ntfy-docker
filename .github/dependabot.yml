@@ -7,9 +7,6 @@ updates:
     commit-message:
       prefix: "ci"
       include: "scope"
-    labels:
-      - "dependencies"
-      - "github-actions"
 
   - package-ecosystem: "gomod"
     directory: "/"
