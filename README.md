@@ -69,7 +69,7 @@ getent group ${APP_UID}
 Create an unprivileged system account with a matching user-group (`-U`) and disabled login shell:
 
 ```bash
-sudo useradd -m -d /home/ntfy -s /usr/sbin/nologin -u ${APP_UID} -U ntfy
+sudo useradd -M -d /home/ntfy -s /usr/sbin/nologin -u ${APP_UID} -U ntfy
 ```
 
 ### 2. Create Directory Layout & Assign Ownership
