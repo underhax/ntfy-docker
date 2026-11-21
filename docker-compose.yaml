@@ -2,7 +2,7 @@ name: ntfy
 
 services:
   ntfy:
-    image: ghcr.io/underhax/ntfy-docker:${NTFY_VERSION:-latest}
+    image: ghcr.io/underhax/ntfy:${NTFY_VERSION:-latest}
     container_name: ntfy
     restart: always
     user: "${APP_UID}:${APP_GID}"
